@@ -1,0 +1,111 @@
+const { Client, GatewayIntentBits } = require('discord.js');
+const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus } = require('@discordjs/voice');
+const ytdl = require('ytdl-core');
+
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildVoiceStates,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+  ],
+});
+
+const PREFIX = '!'; // Préfixe de commande
+const queue = new Map(); // File d'attente pour les chansons
+
+client.once('ready', () => {
+  console.log(`Connecté en tant que ${client.user.tag}`);
+});
+
+async function playMusic(guild, song) {
+  const serverQueue = queue.get(guild.id);
+
+  if (!song) {
+    serverQueue.voiceChannel.leave();
+    queue.delete(guild.id);
+    return;
+  }
+
+  const stream = ytdl(song.url, { filter: 'audioonly' });
+  const resource = createAudioResource(stream);
+  const player = createAudioPlayer();
+
+  player.play(resource);
+  player.on(AudioPlayerStatus.Idle, () => {
+    serverQueue.songs.shift();
+    playMusic(guild, serverQueue.songs[0]);
+  });
+
+  serverQueue.connection.subscribe(player);
+}
+
+client.on('messageCreate', async message => {
+  if (!message.content.startsWith(PREFIX) || message.author.bot) return;
+
+  const args = message.content.slice(PREFIX.length).split(' ');
+  const command = args.shift().toLowerCase();
+
+  const serverQueue = queue.get(message.guild.id);
+
+  if (command === 'play') {
+    const voiceChannel = message.member.voice.channel;
+    if (!voiceChannel) return message.channel.send('Vous devez être dans un canal vocal pour jouer de la musique !');
+    const permissions = voiceChannel.permissionsFor(message.client.user);
+    if (!permissions.has('CONNECT') || !permissions.has('SPEAK')) {
+      return message.channel.send('J’ai besoin des permissions pour rejoindre et parler dans votre canal vocal !');
+    }
+
+    const songInfo = await ytdl.getInfo(args[0]);
+    const song = {
+      title: songInfo.videoDetails.title,
+      url: songInfo.videoDetails.video_url,
+    };
+
+    if (!serverQueue) {
+      const queueContruct = {
+        textChannel: message.channel,
+        voiceChannel: voiceChannel,
+        connection: null,
+        songs: [],
+        volume: 5,
+        playing: true,
+      };
+
+      queue.set(message.guild.id, queueContruct);
+      queueContruct.songs.push(song);
+
+      try {
+        const connection = joinVoiceChannel({
+          channelId: voiceChannel.id,
+          guildId: message.guild.id,
+          adapterCreator: message.guild.voiceAdapterCreator,
+        });
+        queueContruct.connection = connection;
+        playMusic(message.guild, queueContruct.songs[0]);
+      } catch (err) {
+        console.error(err);
+        queue.delete(message.guild.id);
+        return message.channel.send(err.message);
+      }
+    } else {
+      serverQueue.songs.push(song);
+      return message.channel.send(`${song.title} a été ajouté à la file d'attente !`);
+    }
+  }
+
+  else if (command === 'skip') {
+    if (!message.member.voice.channel) return message.channel.send('Vous devez être dans un canal vocal pour passer une chanson !');
+    if (!serverQueue) return message.channel.send("Il n'y a aucune chanson à passer !");
+    serverQueue.connection.dispatcher.end();
+  }
+
+  else if (command === 'stop') {
+    if (!message.member.voice.channel) return message.channel.send('Vous devez être dans un canal vocal pour arrêter la musique !');
+    if (!serverQueue) return message.channel.send("Il n'y a aucune chanson à arrêter !");
+    serverQueue.songs = [];
+    serverQueue.connection.dispatcher.end();
+  }
+});
+
+client.login('MTIxNDAyMTk5OTY0MzQ1OTYwNw.GOPBoj.cDvZR0kpreoHWL0FJZ-5RwMSNQZ6K6CYzAv_Ws');
